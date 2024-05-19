@@ -1,11 +1,7 @@
-import csv
-
 import albumentations as A
 import cv2
-from matplotlib import pyplot as plt
 import os
 import pandas as pd
-from tqdm import tqdm
 
 
 def apply_augmentation_pipeline(image, num_augmentations):
@@ -31,67 +27,50 @@ def apply_augmentation_pipeline(image, num_augmentations):
 
 # !!! perform only once !!!
 def perform_data_augmentation():
-    # 1. create new metadata file for augmented data
-    # 3. read images one by one
-    # 4. apply augmentation pipeline
-    # 5. for all new images
-    # 6. (add to/create new) directory with name - the name of the species
-    # 7. create unique id "augmented*number_of_augmented_pic*"
-    # 8. create string with new file_path
-    # 9. copy all other attributes from original metadata
-    # 10. save image to new file_path
-    # 11. append new line to new metadata file
-
-    # with open('./augmented/augmented_metadata.csv', 'w', newline='') as new_metadata_file:
-    #     writer = csv.writer(new_metadata_file)
-
     with open('../data/SnakeCLEF2022-TrainMetadata.csv', 'r') as original_metadata_file:
         columns = original_metadata_file.readline()
-        # observation_id,endemic,binomial_name,country,code,class_id,file_path
+        distribution = get_data_distribution()
 
         with open('./augmented_metadata.csv', 'a', newline='') as new_metadata_file:
-            writer = csv.writer(new_metadata_file)
-            writer.writerow(columns)
+            new_metadata_file.write(columns)
 
         snake_id = 0
         for line in original_metadata_file:
             tokens = line.split(',')
 
-            new_observation_id = 'augmented' + str(snake_id)
-            snake_id += 1
-            if snake_id > 10:
-                break
-
-            new_file_name = new_observation_id + '.jpg'
-            new_file_path = './augmented_images' + new_file_name
-
-            original_file_path = '../data/SnakeCLEF2023-small_size/' + tokens[6]
+            original_file_path = '../data/SnakeCLEF2023-small_size/' + tokens[6].strip()
 
             image = cv2.imread(original_file_path)
+            if image is None:
+                continue
+
             image = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
-            num_of_aug = get_number_of_augmentations(tokens[2])
+            species = original_file_path.split('/')[-2]
+            num_of_aug = get_number_of_augmentations(species, distribution)
 
             augmented_images = apply_augmentation_pipeline(image, num_of_aug)
             for aug_img in augmented_images:
+                new_observation_id = 'augmented' + str(snake_id)
+                snake_id += 1
+                print(str(snake_id + 1) + '/270252: ' + str(100*snake_id/270252))
+
+                new_file_name = new_observation_id + '.jpg'
+                new_file_path = 'data-augmentation/augmented_images/' + new_file_name
                 save_image(aug_img, new_file_name)
 
-            tokens[0] = new_observation_id
-            tokens[6] = new_file_path
+                tokens[0] = new_observation_id
+                tokens[6] = new_file_path + os.linesep
 
-            with open('./augmented_metadata.csv', 'a', newline='') as new_metadata_file:
-                writer = csv.writer(new_metadata_file)
-                writer.writerow(','.join(tokens))
+                with open('./augmented_metadata.csv', 'a', newline='') as new_metadata_file:
+                    new_metadata_file.write(','.join(tokens))
 
 
 def save_image(image, name):
-    plt.imshow(image)
-    plt.axis('off')
-    plt.savefig('./augmented_images/' + name, bbox_inches='tight', pad_inches=0)
+    cv2.imwrite('./augmented_images/' + name, image)
 
 
-def get_number_of_augmentations(species):
-    distribution = get_data_distribution()
-    return int(max(50 - distribution[species]['num'], 0) / 3)
+def get_number_of_augmentations(species, distribution):
+    return int(max(50 - distribution[distribution['species'] == species]['num'].iloc[0], 0) / 3)
 
 
 def get_data_distribution():
@@ -99,7 +78,7 @@ def get_data_distribution():
     years = os.listdir(data_dir)
 
     df = []
-    for year in tqdm(years):
+    for year in years:
         species = os.listdir(data_dir + '/' + year)
         for s in species:
             current_s = os.listdir(data_dir + '/' + year + '/' + s)

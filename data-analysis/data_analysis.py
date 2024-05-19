@@ -1,8 +1,6 @@
 import os
 import pandas as pd
 from tqdm import tqdm
-import matplotlib.pyplot as plt
-import seaborn as sns
 
 
 def get_data_distribution():
