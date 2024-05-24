@@ -1,118 +1,135 @@
-import tensorflow as tf
-from tensorflow.keras.applications import EfficientNetB0
-from tensorflow.keras.models import Model
-from tensorflow.keras.optimizers import Adam
-import json
-import pickle
 import os
+import time
+import numpy as np
+import tensorflow as tf
+from tensorflow.keras.preprocessing import image
+from tensorflow.keras.utils import to_categorical
+from tensorflow.keras.applications.efficientnet import EfficientNetB0, preprocess_input
+from sklearn.model_selection import train_test_split
 
-train_dir = '../data'
+from train.feature_extraction import build_features_model, load_and_preprocess_image
 
-def custom_image_dataset_from_directory(directory, labels='inferred', label_mode='int', class_names=None,
-                                        color_mode='rgb', batch_size=32, image_size=(256, 256), shuffle=True,
-                                        seed=None, validation_split=None, subset=None, interpolation='bilinear'):
-    # Load the dataset using the original function
-    dataset = tf.keras.preprocessing.image_dataset_from_directory(
-        directory,
-        labels=labels,
-        label_mode=label_mode,
-        class_names=class_names,
-        color_mode=color_mode,
-        batch_size=batch_size,
-        image_size=image_size,
-        shuffle=shuffle,
-        seed=seed,
-        validation_split=validation_split,
-        subset=subset,
-        interpolation=interpolation
-    )
+train_dir = '../data/sample'
+metadata_path = '../data/SnakeCLEF2022-TrainMetadata.csv'
+target_size = (224, 224)
+batch_size = 20  # should be 32
+epochs = 2
 
-    # Extract class names from the directory structure
-    if class_names is None:
-        class_names = sorted([dir1 for dir1 in os.listdir(directory)
-                              if os.path.isdir(os.path.join(directory, dir1))])
-
-    # Define a dictionary to map directory names to class labels
-    label_map = {class_name: i for i, class_name in enumerate(class_names)}
-
-    # Custom function to map labels
-    def map_labels(images, labels):
-        new_labels = []
-        for label in labels:
-            # Convert integer label to string
-            label_str = tf.strings.as_string(label)
-            # Decode the label to string
-            label_str = tf.strings.reduce_join(label_str, separator='/')
-            # Extract the class label from the directory structure
-            class_label = tf.strings.regex_replace(tf.strings.split(label_str, sep='/')[-2], pattern=r'\d+', rewrite='')
-            # Map the class label to its corresponding index
-            new_labels.append(label_map[class_label.numpy()])
-        return images, new_labels
-
-    # Apply the custom label mapping function to the dataset
-    dataset = dataset.map(map_labels)
-
-    return dataset, class_names
+fine_tuned_cnn_path = 'snake_cnn.h5'
 
 
-if __name__ == "__main__":
+def load_images(file, batch, num_classes):
+    images = []
+    labels = []
+    i = 0
 
-    # Load the dataset
-    dataset = tf.keras.preprocessing.image_dataset_from_directory(
-        train_dir,
-        labels='inferred',
-        label_mode='categorical',
-        batch_size=6,
-        image_size=(224, 224),
-        shuffle=True,
-        seed=123
-    )
-    print(dataset.cardinality().numpy())
+    while i < batch:
+        line = file.readline()
+        if not line:
+            break
 
-    # Split the dataset into training and validation sets
-    val_split = 0.1
-    num_val_samples = int(val_split * dataset.cardinality().numpy())
-    print(num_val_samples)
-    num_train_samples = dataset.cardinality().numpy() - num_val_samples
-    print(f'Train samples: {num_train_samples}')
+        elements = line.split(',')
 
-    train_dataset = dataset.skip(num_val_samples)
-    validation_dataset = dataset.take(num_val_samples)
+        image_path = train_dir + '/' + elements[-1].strip()
+        if not os.path.exists(image_path):
+            continue
 
-    # Extract number of classes
-    num_classes = 29
+        class_id = int(elements[-2])
 
-    # Load the pre-trained EfficientNetB0 model
+        img = image.load_img(image_path, target_size=target_size)
+        img_array = image.img_to_array(img)
+        # TODO: meta = some_encoding_for_countries(elements[4])
+        # TODO: meta_array = np.array(meta).reshape(1, -1)
+        images.append(img_array)
+        labels.append(class_id)
+
+        i += 1
+
+    # TODO: return [np.array(images), metadata], to_categorical(labels, num_classes=num_classes)
+    return np.array(images), to_categorical(labels, num_classes=num_classes)
+
+
+def extract_class_names():
+    class_names = []
+    years = os.listdir(train_dir)
+
+    for year in years:
+        year_dir = train_dir + '/' + year
+        class_names += ([class_name for class_name in os.listdir(year_dir)])
+
+    return set(class_names)
+
+
+def batch_training(model, num_classes):
+    print("Starting training on batches")
+
+    current_epoch = 1
+    while current_epoch < epochs:
+        with open(metadata_path, 'r') as metadata_file:
+            metadata_file.readline()  # skip column names
+            while True:
+                images, labels = load_images(metadata_file, batch_size, num_classes)
+                print(f"Loaded a batch of images. Batch size is {len(images)}")
+
+                x_train, x_val, y_train, y_val = train_test_split(images, labels, test_size=0.2, random_state=42)
+                model.train_on_batch(x_train, y_train)
+
+                print("Successfully trained model on batch")
+
+                metrics = model.evaluate(x_val, y_val, verbose=0)
+                val_loss = metrics[0]
+                val_accuracy = metrics[1]
+
+                print(f"Epoch {current_epoch + 1}/{epochs}, Validation Loss: {val_loss}, Validation Accuracy: {val_accuracy}")
+
+                if len(images) < batch_size:
+                    break
+        current_epoch += 1
+
+    return model
+
+
+def fine_tune():
     base_model = EfficientNetB0(weights='imagenet', include_top=False, input_shape=(224, 224, 3))
-
-    # Add Global Average Pooling and Output Layers
-    x = base_model.output
-    x = tf.keras.layers.GlobalAveragePooling2D()(x)
-    output = tf.keras.layers.Dense(num_classes, activation='softmax')(x)
-
-    model = Model(inputs=base_model.input, outputs=output)
-
-    # Unfreeze the base model's layers for fine-tuning
     for layer in base_model.layers:
         layer.trainable = True
 
-    # Compile the model
-    model.compile(optimizer=Adam(learning_rate=1e-5), loss='categorical_crossentropy', metrics=['accuracy'])
+    num_classes = 1784  # len(extract_class_names())
+    # print("Extracted class names and their number")
 
-    # Train the model on the new data
-    history = model.fit(
-        train_dataset,
-        validation_data=validation_dataset,
-        epochs=2  # Adjust the number of epochs based on your needs
-    )
+    x = base_model.output
+    x = tf.keras.layers.GlobalAveragePooling2D()(x)
+    x = tf.keras.layers.Dense(num_classes, activation='softmax')(x)
+    model = tf.keras.models.Model(inputs=base_model.input, outputs=x)
+    model.compile(optimizer=tf.keras.optimizers.Adam(1e-5),  # Lower learning rate for fine-tuning
+                  loss='categorical_crossentropy',
+                  metrics=['accuracy'])
 
-    for key in history.history:
-        print(f'{key} = {history.history[key]}')
+    trained_model = batch_training(model, num_classes)
 
-    model_json = model.to_json()
+    return trained_model
 
-    # Save architecture and weights together using pickle
-    with open('model.pkl', 'wb') as file:
-        pickle.dump({'model_architecture': model_json, 'model_weights': "model_weights.h5"}, file)
 
-    print('save model in pikle format in file model.pkl')
+def save_model(model, path):
+    model.save(path)
+
+
+if __name__ == "__main__":
+    # start = time.time()
+    # fine_tuned_model = fine_tune()
+    # end = time.time()
+    #
+    # print(f'Fine-tuning took {end - start} seconds')
+    #
+    # save_model(fine_tuned_model, fine_tuned_cnn_path)
+
+    feature_extraction_model = build_features_model(fine_tuned_cnn_path)
+
+    img_path = '../data/SnakeCLEF2023-small_size/2003/Bitis_caudalis/12089782.jpeg'
+    img_arr = load_and_preprocess_image(img_path)
+
+    feature_vector = feature_extraction_model.predict(img_arr)
+
+    print(f"Feature vector (shape {feature_vector.shape}):")
+    print(feature_vector)
+

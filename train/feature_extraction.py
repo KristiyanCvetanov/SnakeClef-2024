@@ -3,9 +3,10 @@ from tensorflow.keras.applications import EfficientNetB0
 from tensorflow.keras.preprocessing import image
 from tensorflow.keras.applications.efficientnet import preprocess_input
 from tensorflow.keras.models import Model
-from tensorflow.keras.layers import Flatten, Dense, Dropout, Input
+from tensorflow.keras.layers import Flatten, Dense, Dropout, Input, Concatenate
 import numpy as np
 from PIL import Image
+
 
 def load_and_preprocess_image(image_path):
     img = image.load_img(image_path, target_size=(224, 224))
@@ -14,13 +15,8 @@ def load_and_preprocess_image(image_path):
     img_array = preprocess_input(img_array)
     return img_array
 
-def build_features_model():
-    base_model = EfficientNetB0(
-        weights='imagenet',
-        include_top=False,
-        input_shape=(224, 224, 3),
-        pooling='avg',
-    )
+def build_features_model(base_model_path):
+    base_model = tf.keras.models.load_model(base_model_path)
 
     image_input = Input(shape=(224, 224, 3), name='image_input')
     x = base_model(image_input)
@@ -31,12 +27,16 @@ def build_features_model():
     metadata_input = Input(shape=(2,), name='metadata_input')
     combined = Concatenate()([feature_vector, metadata_input])
 
-    feature_extraction_model = Model(inputs=[image_input, metadata_input], outputs=combined)
+    # TODO: fix the two below
+    model_input = image_input  # [image_input, metadata_input]
+    model_output = feature_vector  # combined
+
+    feature_extraction_model = Model(inputs=model_input, outputs=model_output)
 
     return feature_extraction_model
 
-def extract_features(image_paths, metadata):
-    feature_extraction_model = build_features_model()
+def extract_features(base_model_path, image_paths, metadata):
+    feature_extraction_model = build_features_model(base_model_path)
     features = []
 
     for img_path, meta in zip(image_paths, metadata):
@@ -53,7 +53,7 @@ if __name__ == 'main':
 
     img_array = load_and_preprocess_image(img_path)
 
-    feature_extraction_model = build_features_model()
+    feature_extraction_model = build_features_model('snake_cnn.h5')
     feature_vector = feature_extraction_model.predict(img_array)
 
     print(f"Feature vector (shape {feature_vector.shape}):")
